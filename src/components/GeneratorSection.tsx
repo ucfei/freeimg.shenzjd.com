@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import Generator from './Generator'
 import History from './History'
 import { HISTORY_LIMIT } from '../config'
-import { addHistory, clearHistory, loadHistory, removeHistory } from '../utils/historyDB'
+import { addHistory, clearHistory, loadHistory, removeHistory, updateHistory } from '../utils/historyDB'
 import type { HistoryItem } from '../types'
 
 export default function GeneratorSection() {
@@ -46,10 +46,21 @@ export default function GeneratorSection() {
     await removeHistory(id)
   }
 
+  // 局部更新历史记录（如图床上传成功后写回外链）
+  const handleHistoryUpdate = async (id: string, patch: Partial<HistoryItem>) => {
+    setHistory((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)))
+    await updateHistory(id, patch)
+  }
+
   return (
     <>
-      <Generator onHistoryAdd={handleHistoryAdd} />
-      <History items={history} onClear={handleHistoryClear} onRemove={handleHistoryRemove} />
+      <Generator onHistoryAdd={handleHistoryAdd} onHistoryUpdate={handleHistoryUpdate} />
+      <History
+        items={history}
+        onClear={handleHistoryClear}
+        onRemove={handleHistoryRemove}
+        onHistoryUpdate={handleHistoryUpdate}
+      />
     </>
   )
 }

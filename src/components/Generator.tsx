@@ -1,20 +1,23 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { generateImage } from '../api'
 import { SIZE_OPTIONS, STORAGE_KEYS } from '../config'
 import { STYLE_PRESETS } from '../presets'
 import type { StylePreset } from '../presets'
 import type { HistoryItem, SizeOption } from '../types'
+import { uploadGeneratedImage } from '../lib/figurebed/upload'
 import './Generator.css'
 
 interface GeneratorProps {
   onHistoryAdd: (item: HistoryItem) => void
+  onHistoryUpdate: (id: string, patch: Partial<HistoryItem>) => void
 }
 
 type StatusType = 'idle' | 'loading' | 'success' | 'error'
+type UploadStatus = 'idle' | 'uploading' | 'uploaded' | 'error'
 
-export default function Generator({ onHistoryAdd }: GeneratorProps) {
+export default function Generator({ onHistoryAdd, onHistoryUpdate }: GeneratorProps) {
   // localStorage 仅在客户端可用，SSR 时不能初始化读取
   const [apiKey, setApiKey] = useState('')
   const [showKey, setShowKey] = useState(false)
@@ -55,6 +58,12 @@ export default function Generator({ onHistoryAdd }: GeneratorProps) {
   const [statusMsg, setStatusMsg] = useState('')
   const [result, setResult] = useState<{ dataUrl: string; ext: string } | null>(null)
   const [loading, setLoading] = useState(false)
+  // 图床上传状态（结果区按钮用）
+  const [uploadStatus, setUploadStatus] = useState<UploadStatus>('idle')
+  const [uploadUrl, setUploadUrl] = useState('')
+  const [uploadError, setUploadError] = useState('')
+  // 记录最近一次写入历史的 id，上传成功后把外链写回该条记录
+  const lastHistoryIdRef = useRef<string | null>(null)
 
   const handleGenerate = async () => {
     if (!apiKey.trim()) {
@@ -79,6 +88,9 @@ export default function Generator({ onHistoryAdd }: GeneratorProps) {
     localStorage.setItem(STORAGE_KEYS.apiKey, apiKey.trim())
     setLoading(true)
     setResult(null)
+    setUploadStatus('idle')
+    setUploadUrl('')
+    setUploadError('')
     setStatus('loading')
     setStatusMsg('正在生成图片，2K 大图可能需要 10~60 秒，请耐心等待…')
 
@@ -94,7 +106,8 @@ export default function Generator({ onHistoryAdd }: GeneratorProps) {
       setStatusMsg('图片生成成功！')
 
       onHistoryAdd({
-        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        id: (lastHistoryIdRef.current =
+          Date.now().toString(36) + Math.random().toString(36).slice(2, 6)),
         dataUrl: res.dataUrl,
         ext: res.ext,
         prompt: finalPrompt,
@@ -129,6 +142,34 @@ export default function Generator({ onHistoryAdd }: GeneratorProps) {
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
+  }
+
+  // 上传当前结果到 GitHub 图床，成功后复制外链并写回历史记录
+  const handleUpload = async () => {
+    if (!result || uploadStatus === 'uploading') return
+    setUploadStatus('uploading')
+    setUploadError('')
+    try {
+      const res = await uploadGeneratedImage(result.dataUrl, result.ext, prompt)
+      setUploadUrl(res.url)
+      setUploadStatus('uploaded')
+      navigator.clipboard.writeText(res.url).catch(() => {})
+      if (lastHistoryIdRef.current) {
+        onHistoryUpdate(lastHistoryIdRef.current, { cdnUrl: res.url, cdnTarget: res.target })
+      }
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : String(err))
+      setUploadStatus('error')
+    }
+  }
+
+  const handleCopyUploadUrl = async () => {
+    if (!uploadUrl) return
+    try {
+      await navigator.clipboard.writeText(uploadUrl)
+    } catch {
+      // 剪贴板不可用时静默忽略
+    }
   }
 
   return (
@@ -318,9 +359,31 @@ export default function Generator({ onHistoryAdd }: GeneratorProps) {
               <div className="result-img-wrap">
                 <img src={result.dataUrl} alt="生成的图片" />
               </div>
-              <button className="btn btn-success download-btn" onClick={handleDownload}>
-                ⬇ 下载图片
-              </button>
+              <div className="result-actions">
+                <button className="btn btn-success download-btn" onClick={handleDownload}>
+                  ⬇ 下载图片
+                </button>
+                {uploadStatus === 'uploaded' ? (
+                  <button className="btn btn-ghost upload-btn" onClick={handleCopyUploadUrl} title={uploadUrl}>
+                    🔗 复制图床链接
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-ghost upload-btn"
+                    onClick={handleUpload}
+                    disabled={uploadStatus === 'uploading'}
+                    title="上传到 GitHub 图床（公开可访问），成功后自动复制外链"
+                  >
+                    {uploadStatus === 'uploading' ? '⏳ 上传中…' : '☁️ 上传图床'}
+                  </button>
+                )}
+              </div>
+              {uploadStatus === 'uploaded' && (
+                <div className="hint upload-hint">已上传到图床，链接已复制到剪贴板（图片公开可访问）。</div>
+              )}
+              {uploadStatus === 'error' && (
+                <div className="status status-error">上传图床失败：{uploadError}</div>
+              )}
             </div>
           )}
         </div>

@@ -2,18 +2,23 @@
 
 import { useEffect, useState } from 'react'
 import type { HistoryItem } from '../types'
+import { uploadGeneratedImage } from '../lib/figurebed/upload'
 import './History.css'
 
 interface HistoryProps {
   items: HistoryItem[]
   onClear: () => void
   onRemove: (id: string) => void
+  onHistoryUpdate: (id: string, patch: Partial<HistoryItem>) => void
 }
 
 type ConfirmAction = { type: 'clear' } | { type: 'remove'; id: string }
 
-export default function History({ items, onClear, onRemove }: HistoryProps) {
+export default function History({ items, onClear, onRemove, onHistoryUpdate }: HistoryProps) {
   const [pendingConfirm, setPendingConfirm] = useState<ConfirmAction | null>(null)
+  // 图床上传状态：进行中的 id 集合 + 失败信息
+  const [uploadingIds, setUploadingIds] = useState<Set<string>>(new Set())
+  const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({})
 
   // 弹窗打开时支持 Esc 键关闭
   useEffect(() => {
@@ -34,6 +39,42 @@ export default function History({ items, onClear, onRemove }: HistoryProps) {
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
+  }
+
+  // 上传到 GitHub 图床（成功后自动复制外链并写回记录）
+  const handleUpload = async (item: HistoryItem) => {
+    if (uploadingIds.has(item.id)) return
+    setUploadingIds((prev) => new Set(prev).add(item.id))
+    setUploadErrors((prev) => {
+      const next = { ...prev }
+      delete next[item.id]
+      return next
+    })
+    try {
+      const res = await uploadGeneratedImage(item.dataUrl, item.ext, item.prompt)
+      onHistoryUpdate(item.id, { cdnUrl: res.url, cdnTarget: res.target })
+      navigator.clipboard.writeText(res.url).catch(() => {})
+    } catch (err) {
+      setUploadErrors((prev) => ({
+        ...prev,
+        [item.id]: err instanceof Error ? err.message : String(err)
+      }))
+    } finally {
+      setUploadingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(item.id)
+        return next
+      })
+    }
+  }
+
+  const handleCopyLink = async (item: HistoryItem) => {
+    if (!item.cdnUrl) return
+    try {
+      await navigator.clipboard.writeText(item.cdnUrl)
+    } catch {
+      // 剪贴板不可用时静默忽略
+    }
   }
 
   // 重新生成:不跳路由,始终回填到当前页的生成器并锚点滑到生成区
@@ -106,7 +147,28 @@ export default function History({ items, onClear, onRemove }: HistoryProps) {
                     >
                       ⬇ 下载
                     </button>
+                    {item.cdnUrl ? (
+                      <button
+                        className="btn btn-ghost history-upload"
+                        onClick={() => handleCopyLink(item)}
+                        title="点击复制图床外链"
+                      >
+                        🔗 复制链接
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn-ghost history-upload"
+                        onClick={() => handleUpload(item)}
+                        disabled={uploadingIds.has(item.id)}
+                        title="上传到 GitHub 图床（公开可访问），成功后自动复制外链"
+                      >
+                        {uploadingIds.has(item.id) ? '⏳ 上传中…' : '☁️ 上传图床'}
+                      </button>
+                    )}
                   </div>
+                  {uploadErrors[item.id] && (
+                    <div className="history-upload-error">{uploadErrors[item.id]}</div>
+                  )}
                 </div>
               </div>
             ))}

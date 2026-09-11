@@ -36,6 +36,9 @@ export interface HistoryItem {
   createdAt: number
   // 生成渠道标识（'gitee' | 'hunyuan'），旧记录无此字段
   provider?: string
+  // 图床外链（上传成功后写回；target 用于换 CDN 前缀）
+  cdnUrl?: string
+  cdnTarget?: { owner: string; repo: string; branch: string; path: string }
 }
 
 // 提示词分类

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import HunyuanStudio from './HunyuanStudio'
 import History from './History'
 import { HISTORY_LIMIT } from '../config'
-import { addHistory, clearHistory, loadHistory, removeHistory } from '../utils/historyDB'
+import { addHistory, clearHistory, loadHistory, removeHistory, updateHistory } from '../utils/historyDB'
 import type { HistoryItem } from '../types'
 
 // 与首页 GeneratorSection 同构:管理 IndexedDB 历史记录(与 Gitee 渠道共用同一份历史)
@@ -43,10 +43,21 @@ export default function HunyuanSection() {
     await removeHistory(id)
   }
 
+  // 局部更新历史记录（如图床上传成功后写回外链）
+  const handleHistoryUpdate = async (id: string, patch: Partial<HistoryItem>) => {
+    setHistory((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)))
+    await updateHistory(id, patch)
+  }
+
   return (
     <>
       <HunyuanStudio onHistoryAdd={handleHistoryAdd} />
-      <History items={history} onClear={handleHistoryClear} onRemove={handleHistoryRemove} />
+      <History
+        items={history}
+        onClear={handleHistoryClear}
+        onRemove={handleHistoryRemove}
+        onHistoryUpdate={handleHistoryUpdate}
+      />
     </>
   )
 }

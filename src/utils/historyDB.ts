@@ -77,6 +77,28 @@ export async function addHistory(item: HistoryItem): Promise<void> {
 }
 
 /**
+ * 局部更新指定 id 的历史记录（如上传图床后写回外链）。
+ */
+export async function updateHistory(id: string, patch: Partial<HistoryItem>): Promise<void> {
+  try {
+    const db = await openDB()
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite')
+      const store = tx.objectStore(STORE_NAME)
+      const getReq = store.get(id)
+      getReq.onsuccess = () => {
+        const item = getReq.result as HistoryItem | undefined
+        if (item) store.put({ ...item, ...patch })
+      }
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+  } catch (err) {
+    console.error('更新历史记录失败：', err)
+  }
+}
+
+/**
  * 删除指定 id 的历史记录。
  */
 export async function removeHistory(id: string): Promise<void> {
