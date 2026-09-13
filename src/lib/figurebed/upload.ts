@@ -2,7 +2,8 @@
  * figurebed 上传编排：把「登录 → 状态判定 → 按需引导 → 领 token → 浏览器直传」
  * 串成一个 uploadGeneratedImage() 调用。
  * 上传目标与 img.shenzjd.com 共用同一个 figurebed 仓库（<用户名>/img.shenzjd.com），
- * 图放进 ai/ 子目录做来源隔离，文件名沿用图床的 imgx- 时间戳命名。
+ * 分支/目录/CDN 偏好读用户在图床站同步到仓库 main 分支的 config.json，
+ * 读不到时退回 main 分支 + ai/ 子目录（AI 生成图隔离），文件名沿用 imgx- 时间戳命名。
  */
 
 import { ensureWxLogin } from '../../utils/wxauth-client'
@@ -22,11 +23,57 @@ import {
   setupCapability,
 } from './wxauth'
 
-/** 生成图在图床仓库中的存放目录（与手动上传图隔离） */
+/** 用户没在图床站配置过目录时的兜底存放目录（与手动上传图隔离） */
 export const FIGUREBED_UPLOAD_DIR = 'ai'
 
-/** 上传结果默认使用的 CDN 前缀（国内直连优先，可在复制时手动换 raw） */
-const DEFAULT_CDN = 'jsdmirror'
+/**
+ * 图床站把用户上传配置（branch/directory/cdn 等）同步在仓库 main 分支的该文件里，
+ * 固定 main 分支、公开仓库匿名可读（见图床站 useConfigSync 的 CONFIG_BRANCH）。
+ */
+const FIGUREBED_CONFIG_PATH = '.img.shenzjd.com/config.json'
+
+interface FigurebedRemoteConfig {
+  branch: string
+  /** 已去掉首尾斜杠；空串 = 图床配置为根目录 */
+  directory: string
+  cdn?: string
+  /** 仅 cdn=github 时生效（与图床站 generateLink 行为一致） */
+  useRaw?: boolean
+}
+
+let remoteConfigCache: { key: string; config: FigurebedRemoteConfig } | null = null
+
+/**
+ * 读用户在 img.shenzjd.com 的上传配置；读不到（未同步过/网络失败）返回 null。
+ * 匿名 GitHub API 有 60 次/小时限流，所以走 CDN 静态文件：优先 jsdmirror（国内直连），
+ * 失败退 raw.githubusercontent。CDN 有短缓存，刚改完配置可能有几分钟延迟。
+ */
+async function fetchFigurebedConfig(owner: string, repo: string): Promise<FigurebedRemoteConfig | null> {
+  const key = `${owner}/${repo}`
+  if (remoteConfigCache?.key === key) return remoteConfigCache.config
+  const sources = [
+    `https://cdn.jsdmirror.com/gh/${owner}/${repo}@main/${FIGUREBED_CONFIG_PATH}`,
+    `https://raw.githubusercontent.com/${owner}/${repo}/main/${FIGUREBED_CONFIG_PATH}`,
+  ]
+  for (const url of sources) {
+    try {
+      const res = await fetch(url)
+      if (!res.ok) continue
+      const raw = (await res.json()) as Record<string, unknown>
+      const config: FigurebedRemoteConfig = {
+        branch: typeof raw.branch === 'string' && raw.branch ? raw.branch : 'main',
+        directory: typeof raw.directory === 'string' ? raw.directory.replace(/^\/+|\/+$/g, '') : '',
+        cdn: typeof raw.cdn === 'string' ? raw.cdn : undefined,
+        useRaw: raw.useRaw === true,
+      }
+      remoteConfigCache = { key, config }
+      return config
+    } catch {
+      // 换下一个源
+    }
+  }
+  return null
+}
 
 export interface UploadResult {
   /** 外链（默认 jsdmirror CDN） */
@@ -69,12 +116,29 @@ function buildFileName(ext: string): string {
   return `imgx-${date}-${time}-${rand}.${safeExt}`
 }
 
-/** 拼外链（jsdmirror 不支持动态 WebP，保持原图链接） */
-function buildCdnUrl(owner: string, repo: string, branch: string, path: string): string {
-  if (DEFAULT_CDN === 'jsdmirror') {
-    return `https://cdn.jsdmirror.com/gh/${owner}/${repo}@${branch}/${path}`
+/** 拼外链：与图床站 generateLink 对齐，优先用户配置的 CDN 偏好，缺省 jsdmirror */
+function buildCdnUrl(
+  owner: string,
+  repo: string,
+  branch: string,
+  path: string,
+  config?: FigurebedRemoteConfig | null
+): string {
+  const raw = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`
+  const cdn = config?.cdn ?? 'jsdmirror'
+  switch (cdn) {
+    case 'github':
+      // 图床站行为：useRaw=true 用 raw 链接，否则 github.com 页面链接
+      return config?.useRaw ? raw : `https://github.com/${owner}/${repo}/blob/${branch}/${path}`
+    case 'jsdelivr':
+      return `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${branch}/${path}`
+    case 'statically':
+      return `https://cdn.statically.io/gh/${owner}/${repo}/${branch}/${path}`
+    // jsdmirror 不支持动态 WebP，保持原图链接；未知值兜底 jsdmirror
+    case 'jsdmirror':
+    default:
+      return `https://cdn.jsdmirror.com/gh/${owner}/${repo}@${branch}/${path}`
   }
-  return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`
 }
 
 /** 确保已微信登录，返回 wxauth-token；未登录会弹出登录窗 */
@@ -145,15 +209,19 @@ export async function uploadGeneratedImage(
     }
   }
 
-  const api = new GitHubAPI(cap.token, cap.owner, cap.repo)
-  const path = `${FIGUREBED_UPLOAD_DIR}/${buildFileName(ext)}`
+  // 分支/目录/CDN 读用户在图床站同步的配置；没配置过才退回 main + ai/
+  const remoteConfig = await fetchFigurebedConfig(cap.owner, cap.repo)
+  const branch = remoteConfig?.branch || 'main'
+  const dir = remoteConfig?.directory || FIGUREBED_UPLOAD_DIR
+
+  const api = new GitHubAPI(cap.token, cap.owner, cap.repo, branch)
+  const path = `${dir}/${buildFileName(ext)}`
   const blob = dataUrlToBlob(dataUrl)
   const title = prompt.trim().split('\n')[0].slice(0, 40) || 'AI 生成图'
   await api.createOrUpdateFile(path, blob, `upload: ${path}（freeimg AI 生成图：${title}）`)
 
-  const branch = 'main'
   const target = { owner: cap.owner, repo: cap.repo, branch, path }
-  const url = buildCdnUrl(cap.owner, cap.repo, branch, path)
+  const url = buildCdnUrl(cap.owner, cap.repo, branch, path, remoteConfig)
   return { url, markdown: `![${title}](${url})`, path, target }
 }
 
