@@ -12,7 +12,8 @@ export interface SectionItem {
 const DEFAULT_SECTIONS: SectionItem[] = [
   { id: 'generator', label: '在线生成' },
   { id: 'history', label: '生成历史' },
-  { id: 'tutorial', label: '使用教程' }
+  { id: 'tutorial', label: '使用教程' },
+  { id: 'skill', label: 'AI Skill' }
 ]
 
 export default function SectionNav({ sections = DEFAULT_SECTIONS }: { sections?: SectionItem[] }) {

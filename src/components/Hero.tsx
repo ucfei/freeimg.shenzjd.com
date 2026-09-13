@@ -33,6 +33,10 @@ export default function Hero() {
           </a>
         </div>
 
+        <a className="hero-skill-link fade-in-up" href="#skill">
+          🤖 不用网页？装成 AI Skill，让 Claude Code 在对话里直接生图 ↗
+        </a>
+
         <div className="hero-stats fade-in-up">
           {STATS.map((stat) => (
             <div className="stat-item" key={stat.label}>

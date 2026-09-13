@@ -14,6 +14,7 @@ export default function Footer() {
         <div className="footer-links">
           <a href="#generator">在线生成</a>
           <a href="#tutorial">使用教程</a>
+          <a href="#skill">AI Skill</a>
         </div>
         <div className="footer-copyright">
           © {new Date().getFullYear()} FreeImg · 仅供学习交流使用
