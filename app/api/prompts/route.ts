@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getPrompts } from '@/lib/prompts'
+import { clientIp, logApiDone, logApiError, logApiStart } from '@/lib/api-log'
 
 /**
  * GET /api/prompts?page=1&pageSize=24&dimension=useCases&category=8&search=xx
@@ -7,6 +8,16 @@ import { getPrompts } from '@/lib/prompts'
  */
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl
+  const startedAt = Date.now()
+  const ip = clientIp(request)
+  const query = {
+    page: searchParams.get('page') || '1',
+    pageSize: searchParams.get('pageSize') || '24',
+    dimension: searchParams.get('dimension') || '',
+    category: searchParams.get('category') || '',
+    search: searchParams.get('search') || ''
+  }
+  logApiStart('prompts', { ip, ...query })
 
   try {
     const data = await getPrompts({
@@ -19,13 +30,15 @@ export async function GET(request: NextRequest) {
       search: searchParams.get('search') || undefined
     })
 
+    logApiDone('prompts', 200, startedAt, { ip, total: data.total })
     return NextResponse.json({
       success: true,
       data,
       code: 0
     })
   } catch (err) {
-    console.error('查询提示词失败:', err)
+    logApiError('prompts', err, { ip, elapsed: Date.now() - startedAt })
+    logApiDone('prompts', 500, startedAt, { ip, reason: '查询失败' })
     return NextResponse.json(
       {
         success: false,

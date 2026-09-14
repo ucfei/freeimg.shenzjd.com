@@ -8,6 +8,7 @@ import {
   type TcbCredentials,
   type HunyuanImageParams
 } from '@/lib/tcb'
+import { clientIp, logApiDone, logApiError, logApiStart, maskSecret } from '@/lib/api-log'
 
 /**
  * POST /api/ai/i2i  混元图生图(垫图,纯 BYOK)
@@ -26,10 +27,12 @@ const PROMPT_MAX = 4000
 const IMAGE_MAX_BYTES = 7.5 * 1024 * 1024
 
 export async function POST(request: NextRequest) {
+  const startedAt = Date.now()
   let body: { prompt?: string; imageBase64?: string; cred?: TcbCredentials }
   try {
     body = await request.json()
   } catch {
+    logApiDone('i2i', 400, startedAt, { ip: clientIp(request), reason: '请求体不是合法 JSON' })
     return NextResponse.json({ success: false, message: '请求体不是合法 JSON' }, { status: 400 })
   }
 
@@ -39,20 +42,33 @@ export async function POST(request: NextRequest) {
   const dataUrlMatch = imageBase64.match(/^data:image\/(png|jpe?g);base64,(.+)$/)
   if (dataUrlMatch) imageBase64 = dataUrlMatch[2]
 
+  const ip = clientIp(request)
+  logApiStart('i2i', {
+    ip,
+    promptLen: prompt.length,
+    imageKB: imageBase64 ? Math.round((imageBase64.length * 3) / 4 / 1024) : 0,
+    envId: body.cred?.envId || '(空)',
+    secretId: maskSecret(body.cred?.secretId)
+  })
+
   if (!prompt) {
+    logApiDone('i2i', 400, startedAt, { ip, reason: '提示词为空' })
     return NextResponse.json({ success: false, message: '请先填写提示词' }, { status: 400 })
   }
   if (prompt.length > PROMPT_MAX) {
+    logApiDone('i2i', 400, startedAt, { ip, reason: `提示词超长 ${prompt.length}` })
     return NextResponse.json(
       { success: false, message: `提示词最多 ${PROMPT_MAX} 字，当前 ${prompt.length} 字` },
       { status: 400 }
     )
   }
   if (!imageBase64) {
+    logApiDone('i2i', 400, startedAt, { ip, reason: '缺少垫图' })
     return NextResponse.json({ success: false, message: '请先上传垫图' }, { status: 400 })
   }
   const bytes = Buffer.from(imageBase64, 'base64')
   if (bytes.length > IMAGE_MAX_BYTES) {
+    logApiDone('i2i', 400, startedAt, { ip, reason: `垫图超限 ${(bytes.length / 1024 / 1024).toFixed(1)}MB` })
     return NextResponse.json(
       { success: false, message: `垫图最大 10MB，当前约 ${(bytes.length / 1024 / 1024).toFixed(1)}MB` },
       { status: 400 }
@@ -62,6 +78,7 @@ export async function POST(request: NextRequest) {
   // 必须携带用户自己的云开发环境凭据
   const cred = body.cred
   if (!cred?.envId || !cred?.secretId || !cred?.secretKey) {
+    logApiDone('i2i', 400, startedAt, { ip, reason: '缺少云开发凭据' })
     return NextResponse.json(
       { success: false, message: '请先在上方配置你的腾讯云密钥（SecretId / SecretKey / 环境）' },
       { status: 400 }
@@ -87,13 +104,15 @@ export async function POST(request: NextRequest) {
     const buf = Buffer.from(await imgResp.arrayBuffer())
     const dataUrl = `data:image/png;base64,${buf.toString('base64')}`
 
+    logApiDone('i2i', 200, startedAt, { ip, imageKB: Math.round(buf.length / 1024) })
     return NextResponse.json({
       success: true,
       dataUrl,
       revisedPrompt: res?.data?.[0]?.revised_prompt || ''
     })
   } catch (err) {
-    console.error('混元图生图失败:', err)
+    logApiError('i2i', err, { ip, envId: cred.envId, elapsed: Date.now() - startedAt })
+    logApiDone('i2i', Number((err as { code?: string | number })?.code) || 502, startedAt, { ip, reason: '上游调用失败' })
     // 上游怎么返回就怎么透出:状态码、错误正文均不加工
     const { status, payload } = passthroughTcbError(err)
     return NextResponse.json(payload, { status })

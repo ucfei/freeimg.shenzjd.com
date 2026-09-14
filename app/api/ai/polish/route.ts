@@ -5,6 +5,7 @@ import {
   HY_CHAT_MODEL,
   type TcbCredentials
 } from '@/lib/tcb'
+import { clientIp, logApiDone, logApiError, logApiStart, maskSecret } from '@/lib/api-log'
 
 /**
  * POST /api/ai/polish  提示词助手(混元 hy3 流式输出,纯 BYOK)
@@ -32,10 +33,12 @@ const SYSTEM_PROMPTS: Record<string, string> = {
 }
 
 export async function POST(request: NextRequest) {
+  const startedAt = Date.now()
   let body: { prompt?: string; mode?: string; cred?: TcbCredentials }
   try {
     body = await request.json()
   } catch {
+    logApiDone('polish', 400, startedAt, { ip: clientIp(request), reason: '请求体不是合法 JSON' })
     return NextResponse.json({ success: false, message: '请求体不是合法 JSON' }, { status: 400 })
   }
 
@@ -44,13 +47,23 @@ export async function POST(request: NextRequest) {
     ? (body.mode as string)
     : 'enhance'
   const system = SYSTEM_PROMPTS[mode]
+  const ip = clientIp(request)
+  logApiStart('polish', {
+    ip,
+    mode,
+    promptLen: prompt.length,
+    envId: body.cred?.envId || '(空)',
+    secretId: maskSecret(body.cred?.secretId)
+  })
 
   if (!prompt) {
+    logApiDone('polish', 400, startedAt, { ip, reason: '提示词为空' })
     return NextResponse.json({ success: false, message: '请先填写提示词' }, { status: 400 })
   }
   // 精简模式就是用来处理超长提示词的,放宽输入上限
   const inputMax = mode === 'condense' ? 8192 : PROMPT_MAX
   if (prompt.length > inputMax) {
+    logApiDone('polish', 400, startedAt, { ip, reason: `提示词超长 ${prompt.length}` })
     return NextResponse.json(
       { success: false, message: `提示词最多 ${inputMax} 字，当前 ${prompt.length} 字` },
       { status: 400 }
@@ -60,6 +73,7 @@ export async function POST(request: NextRequest) {
   // 必须携带用户自己的云开发环境凭据
   const cred = body.cred
   if (!cred?.envId || !cred?.secretId || !cred?.secretKey) {
+    logApiDone('polish', 400, startedAt, { ip, reason: '缺少云开发凭据' })
     return NextResponse.json(
       { success: false, message: '请先在上方配置你的腾讯云密钥（SecretId / SecretKey / 环境）' },
       { status: 400 }
@@ -78,21 +92,25 @@ export async function POST(request: NextRequest) {
     })
     textStream = res.textStream
   } catch (err) {
-    console.error('提示词助手调用失败:', err)
+    logApiError('polish', err, { ip, envId: cred.envId, elapsed: Date.now() - startedAt })
+    logApiDone('polish', Number((err as { code?: string | number })?.code) || 502, startedAt, { ip, reason: '上游调用失败' })
     // 上游怎么返回就怎么透出:状态码、错误正文均不加工
     const { status, payload } = passthroughTcbError(err)
     return NextResponse.json(payload, { status })
   }
 
+  let streamBytes = 0
   const encoder = new TextEncoder()
   const stream = new ReadableStream({
     async start(controller) {
       try {
         for await (const chunk of textStream) {
+          streamBytes += chunk.length
           controller.enqueue(encoder.encode(chunk))
         }
+        logApiDone('polish', 200, startedAt, { ip, mode, outLen: streamBytes })
       } catch (err) {
-        console.error('流式输出中断:', err)
+        logApiError('polish', err, { ip, stage: '流式输出中断', elapsed: Date.now() - startedAt })
         controller.enqueue(encoder.encode('\n\n[生成中断，请重试]'))
       } finally {
         controller.close()

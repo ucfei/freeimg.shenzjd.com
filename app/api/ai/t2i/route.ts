@@ -9,6 +9,7 @@ import {
   type TcbCredentials,
   type HunyuanImageParams
 } from '@/lib/tcb'
+import { clientIp, logApiDone, logApiError, logApiStart, maskSecret } from '@/lib/api-log'
 
 /**
  * POST /api/ai/t2i  混元文生图(纯 BYOK)
@@ -24,6 +25,7 @@ import {
 const PROMPT_MAX = 4000
 
 export async function POST(request: NextRequest) {
+  const startedAt = Date.now()
   let body: {
     prompt?: string
     size?: string
@@ -33,29 +35,43 @@ export async function POST(request: NextRequest) {
   try {
     body = await request.json()
   } catch {
+    logApiDone('t2i', 400, startedAt, { ip: clientIp(request), reason: '请求体不是合法 JSON' })
     return NextResponse.json({ success: false, message: '请求体不是合法 JSON' }, { status: 400 })
   }
 
   const prompt = (body.prompt || '').trim()
   const size = body.size || '1024x1024'
   const revise = body.revise !== false
+  const ip = clientIp(request)
+  logApiStart('t2i', {
+    ip,
+    promptLen: prompt.length,
+    size,
+    revise,
+    envId: body.cred?.envId || '(空)',
+    secretId: maskSecret(body.cred?.secretId)
+  })
 
   if (!prompt) {
+    logApiDone('t2i', 400, startedAt, { ip, reason: '提示词为空' })
     return NextResponse.json({ success: false, message: '请先填写提示词' }, { status: 400 })
   }
   if (prompt.length > PROMPT_MAX) {
+    logApiDone('t2i', 400, startedAt, { ip, reason: `提示词超长 ${prompt.length}` })
     return NextResponse.json(
       { success: false, message: `提示词最多 ${PROMPT_MAX} 字，当前 ${prompt.length} 字` },
       { status: 400 }
     )
   }
   if (!HY_SIZES.includes(size as (typeof HY_SIZES)[number])) {
+    logApiDone('t2i', 400, startedAt, { ip, reason: `不支持的尺寸 ${size}` })
     return NextResponse.json({ success: false, message: `不支持的尺寸: ${size}` }, { status: 400 })
   }
 
   // 必须携带用户自己的云开发环境凭据
   const cred = body.cred
   if (!cred?.envId || !cred?.secretId || !cred?.secretKey) {
+    logApiDone('t2i', 400, startedAt, { ip, reason: '缺少云开发凭据' })
     return NextResponse.json(
       { success: false, message: '请先在上方配置你的腾讯云密钥（SecretId / SecretKey / 环境）' },
       { status: 400 }
@@ -83,13 +99,15 @@ export async function POST(request: NextRequest) {
     const buf = Buffer.from(await imgResp.arrayBuffer())
     const dataUrl = `data:image/png;base64,${buf.toString('base64')}`
 
+    logApiDone('t2i', 200, startedAt, { ip, imageKB: Math.round(buf.length / 1024) })
     return NextResponse.json({
       success: true,
       dataUrl,
       revisedPrompt: res?.data?.[0]?.revised_prompt || ''
     })
   } catch (err) {
-    console.error('混元生图失败:', err)
+    logApiError('t2i', err, { ip, envId: cred.envId, elapsed: Date.now() - startedAt })
+    logApiDone('t2i', Number((err as { code?: string | number })?.code) || 502, startedAt, { ip, reason: '上游调用失败' })
     // 上游怎么返回就怎么透出:状态码、错误正文均不加工
     const { status, payload } = passthroughTcbError(err)
     return NextResponse.json(payload, { status })
